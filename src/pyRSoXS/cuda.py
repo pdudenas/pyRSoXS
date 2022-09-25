@@ -34,7 +34,7 @@ def einsum_gpu(array1, array2, TPB_x = 32):
     array1 = np.reshape(array1, (-1,3,3))
     array2 = np.reshape(array2, (-1,3,3))
     #allocate array to return
-    array_out = cuda.device_arary(array1.shape,dtype=float32)
+    array_out = cuda.device_array(array1.shape,dtype=np.float32)
 
     #define TPB and BPG for execution on GPU
     threadsperblock = (TPB_x, 3, 3)
@@ -64,8 +64,8 @@ def rotate_n_gpu(n,rotmat, TPB_x = 32):
     #reshape arrays to [NumZ*NumY*NumX, 3, 3]
     rotmat = np.reshape(rotmat,(-1,3,3))
     #allocated intermediate and final arrays
-    result1 = cuda.device_array(rotmat.shape,dtype=complex64)
-    n_rotated = cuda.device_array(rotmat.shape,dtype=complex64)
+    result1 = cuda.device_array(rotmat.shape,dtype=np.complex64)
+    n_rotated = cuda.device_array(rotmat.shape,dtype=np.complex64)
     
     #define TPB and BPG
     threadsperblock = (TPB_x, 3, 3)
