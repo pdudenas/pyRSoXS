@@ -1,17 +1,83 @@
 '''
-Collection of cuda kernels & functions
-These are slower than cupy.einsum if cupy.einsum has sufficient GPU memory available and the cutensornet backend.
-These are more memory conservative and faster in memory limited situations. 
-See https://docs.cupy.dev/en/stable/user_guide/memory.html
+Collection of cuda kernels, functions, and utils for the Numba CUDA backend of pyRSoXS.
+Performance is 5-10x faster than using cupy.einsum
 '''
 
 
-from numba import cuda, float32, complex64
+from numba import cuda, float32, complex64, void
+
 
 try:
     import cupy as np
+    from cupyx.profiler import benchmark
 except ModuleNotFoundError:
     import numpy as np
+
+
+def TPB_tuner(NumZYX, TPBs=[8, 16, 32, 64, 128],n_repeat=100, plot=False):
+    '''
+    Utility function to optimize the number of threads per block
+
+    Parameters
+    ----------
+        NumZYX : list or tuple
+            Dimensions of morphology
+        TPBs : list
+            List of threads per block to test
+        n_repeat : int
+            Number of function calls to run
+        plot : bool
+            Boolean to plot benchmark timings
+
+    Returns
+    -------
+        opt_einum : int
+            Optimal threads per block for einsum_gpu
+        opt_rotate : int
+            Optimal threads per block for rotate_n_gpu
+    '''
+    mean_times = np.zeros((2,len(TPBs)))
+    # std_times = [[],[]]
+    
+    for i, tpb in enumerate(TPBs):
+        try:
+            # einsum_gpu
+            bm_einsum = benchmark_einsum(tpb, NumZYX, n_repeat=n_repeat)
+            mean_times[0,i] = np.mean(bm_einsum.cpu_times.ravel() + bm_einsum.gpu_times.ravel())
+            # std_times[0,i] = np.std(bm_einsum.cpu_times.ravel() + bm_einsum.gpu_times.ravel())
+            #rotate_n_gpu
+            bm_rotate = benchmark_rotate_n(tpb, NumZYX, n_repeat=n_repeat)
+            mean_times[1,i] = np.mean(bm_rotate.cpu_times.ravel() + bm_rotate.gpu_times.ravel())
+            # std_times[1,i] = np.std(bm_rotate.cpu_times.ravel() + bm_rotate.gpu_times.ravel())
+
+        # too many threads per block
+        except CudaAPIError:
+            print(f'Failed to launch CUDA kernel with {tpb} threads per block')
+            mean_times[:,i] = np.nan
+            # std_times[:,i] = np.nan
+
+
+        # TODO : add in optional plotting with mean and stddev on runs
+
+    #return the optimal threads per block for a given morphology size
+    opt_einsum = TPBs[int(np.nanargmin(mean_times[0,:]))]
+    opt_rotate = TPBs[int(np.nanargmin(mean_times[1,:]))]
+    return opt_einsum, opt_rotate
+
+
+def benchmark_einsum(tpb, NumZYX, n_repeat=100):
+    array1 = np.random.rand(*NumZYX,3,3,dtype=np.float32)
+    array2 = np.random.rand(*NumZYX,3,3,dtype=np.float32)
+
+    return benchmark(einsum_gpu,(array1, array2, tpb),n_repeat=n_repeat)
+
+def benchmark_rotate_n(tpb, NumZYX, n_repeat=100):
+    n = np.zeros((3,3),dtype=np.complex64)
+    np.fill_diagonal(n, 1.0 + 0.5j)
+    array1 = np.random.rand(*NumZYX,3,3,dtype=np.float32)
+
+    return benchmark(rotate_n_gpu,(n, array1, tpb),n_repeat=n_repeat)
+
 
 def einsum_gpu(array1, array2, TPB_x = 32):
     '''
@@ -23,6 +89,8 @@ def einsum_gpu(array1, array2, TPB_x = 32):
             n-dimensional array, where the last two dimension sizes are 3
         array2 : ndarray
             n-dimensional array where the last two dimensions sizes are 3
+        TPB_x : int
+            Number of threads per block in CUDA kernel launch. Default is 32
     
     Returns
     -------
@@ -54,6 +122,8 @@ def rotate_n_gpu(n,rotmat, TPB_x = 32):
             Complex optical tensor of the form n = 1 - delta + i*beta
         rotmat : ndarray
             Rotation matrices for each voxel in the morphology [NumZ, NumY, NumX, 3, 3]
+        TPB_x : int
+            Number of threads per block in CUDA kernel launch. Default is 32
     
     Returns
     -------
@@ -77,7 +147,7 @@ def rotate_n_gpu(n,rotmat, TPB_x = 32):
 
 
 
-@cuda.jit
+@cuda.jit(void(float32[:,:,:],float32[:,:,:],float32[:,:,:]))
 def einsum_kernel(A,B,C):
     '''
     Cuda kernel for matrix multiplication of size [N, 3, 3]. 
@@ -104,7 +174,7 @@ def einsum_kernel(A,B,C):
         C[pos, ty, tz] = A[pos, ty, 0] * B[pos, 0, tz] + A[pos, ty, 1] * B[pos, 1, tz] + A[pos, ty, 2] * B[pos, 2, tz]
 
                 
-@cuda.jit
+@cuda.jit(void(complex64[:,:],float32[:,:,:],complex64[:,:,:],complex64[:,:,:]))
 def rotate_n_kernel(n, rotmat, result1, n_rotated):
     '''
     Cuda kernel for rotating [3,3] optical tensor across morphology array.
@@ -127,10 +197,13 @@ def rotate_n_kernel(n, rotmat, result1, n_rotated):
     tz = cuda.threadIdx.z
 
     stride, _, _ = cuda.gridsize(3)    # blocks per grid
+
+    # 'ij,akj->aik'
     for pos in range(x,rotmat.shape[0],stride):
         result1[pos,ty,tz] = n[ty,0]*rotmat[pos,tz,0] + n[ty,1]*rotmat[pos,tz,1] + n[ty,2]*rotmat[pos,tz,2]
     
     cuda.syncthreads()
-              
+    
+    # 'aij,ajk->aik'
     for pos in range(x,rotmat.shape[0],stride):
         n_rotated[pos,ty,tz] = rotmat[pos,ty,0]*result1[pos,0,tz] + rotmat[pos,ty,1]*result1[pos,1,tz] + rotmat[pos,ty,2]*result1[pos,2,tz]

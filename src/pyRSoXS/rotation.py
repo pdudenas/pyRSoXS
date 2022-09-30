@@ -17,7 +17,7 @@ except ModuleNotFoundError:
 
 
 
-def einsum(array1, array2,backend='cupy', TPB_x=32):
+def einsum(array1, array2,backend='numba', TPB_x=32):
     '''
     Wrapper function to perform optical tensor rotation. 
     Will execute on GPU with cupy or Numba CUDA kernel, or CPU with Numba-compiled function
@@ -39,15 +39,15 @@ def einsum(array1, array2,backend='cupy', TPB_x=32):
             n-dimensional array of the same shape as array1 & array 2
     '''
     if MACHINE_HAS_CUDA:
-        if backend == 'cupy':
-            return np.einsum('aij,ajk->aik', array1, array2)
-        else:
+        if backend == 'numba':
             return einsum_gpu(array1, array2, TPB_x=TPB_x)
+        else:
+            return np.einsum('aij,ajk->aik', array1, array2)
     else:
         return einsum_cpu(array1, array2)
 
 
-def rotate_n(n, rotmat, backend='cupy', TPB_x=32):
+def rotate_n(n, rotmat, backend='numba', TPB_x=32):
     '''
     Wrapper function to perform optical tensor rotation. 
     Will execute on GPU with cupy or Numba CUDA kernel, or CPU with Numba-compiled function
@@ -69,10 +69,11 @@ def rotate_n(n, rotmat, backend='cupy', TPB_x=32):
             Rotated complex optical tensor for each voxel in the morphology [NumZ, NumY, NumX, 3, 3]
     '''
     if MACHINE_HAS_CUDA:
-        if backend == 'cupy':
-            return np.einsum('aij,ajk->aik', rotmat, np.einsum('ij,akj->aik',n,rotmat))
-        else:
+        if backend == 'numba':
             return rotate_n_gpu(n, rotmat, TPB_x=TPB_x)
+        else:
+            return np.einsum('aij,ajk->aik', rotmat, np.einsum('ij,akj->aik',n,rotmat))
+
     else:
         return rotate_n_cpu(n, rotmat)
 
